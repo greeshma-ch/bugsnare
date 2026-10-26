@@ -5,6 +5,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "bugsnare": "tsx src/cli.ts",
     "test": "playwright test",
     "test:report": "playwright show-report"
   },
@@ -19,6 +20,7 @@
     "typescript": "^7.0.2"
   },
   "dependencies": {
+    "dotenv": "^18.0.9",
     "groq-sdk": "^1.6.0",
     "zod": "^4.6.7"
   }
