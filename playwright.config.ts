@@ -1,7 +1,9 @@
 import { defineConfig } from "@playwright/test";
 
 export default defineConfig({
-  testDir: "./examples/shop-app/tests",
+  // The repo root so both the example suite and generated specs in
+  // bugsnare-output/ are discoverable by a plain `npx playwright test`.
+  testDir: ".",
   fullyParallel: true,
   reporter: [["list"], ["html", { open: "never" }]],
   use: {

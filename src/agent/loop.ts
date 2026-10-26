@@ -19,6 +19,8 @@ export interface TraceEntry {
 
 export interface AgentResult {
   status: AgentStatus;
+  /** First heading (or line) of the bug report, used for emitted test headers. */
+  issueTitle: string;
   trace: TraceEntry[];
   assertion?: Assertion;
 }
@@ -139,6 +141,13 @@ function buildUserMessage(
   ].join("\n");
 }
 
+function issueTitleFrom(issueText: string): string {
+  const lines = issueText.split(/\r?\n/).map((line) => line.trim());
+  const heading = lines.find((line) => /^#+\s+/.test(line));
+  if (heading) return heading.replace(/^#+\s+/, "").trim();
+  return lines.find((line) => line.length > 0) ?? "Untitled issue";
+}
+
 function toAssertion(action: Extract<AgentAction, { action: "assert_fail" }>): Assertion {
   return {
     role: action.role,
@@ -167,6 +176,7 @@ export async function runAgent({
   const groq = new Groq({ apiKey, maxRetries: 0 });
   const session = new BrowserSession();
   const trace: TraceEntry[] = [];
+  const issueTitle = issueTitleFrom(issueText);
 
   const ask = async (userText: string): Promise<string> => {
     const completion = await withRateLimitRetry(() =>
@@ -207,7 +217,7 @@ export async function runAgent({
 
       if (!parsed.ok) {
         console.log(`[step ${step}/${maxSteps}] gave up: no valid action after retry (${parsed.error})`);
-        return { status: "gave_up", trace };
+        return { status: "gave_up", issueTitle, trace };
       }
 
       const action = parsed.action;
@@ -216,7 +226,7 @@ export async function runAgent({
 
       if (action.action === "give_up") {
         console.log(`[step ${step}/${maxSteps}] result: gave up - ${action.reason}`);
-        return { status: "gave_up", trace };
+        return { status: "gave_up", issueTitle, trace };
       }
 
       if (action.action === "assert_fail") {
@@ -230,7 +240,7 @@ export async function runAgent({
         console.log(
           `[step ${step}/${maxSteps}] result: reproduced - expected "${assertion.expected}", actual "${assertion.actual}"`,
         );
-        return { status: "reproduced", trace, assertion };
+        return { status: "reproduced", issueTitle, trace, assertion };
       }
 
       const outcome = await session.execute(action);
@@ -241,7 +251,7 @@ export async function runAgent({
     }
 
     console.log(`Reached the ${maxSteps}-step limit without reproducing the bug.`);
-    return { status: "max_steps", trace };
+    return { status: "max_steps", issueTitle, trace };
   } finally {
     await session.close();
   }

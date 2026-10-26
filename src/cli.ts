@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { runAgent } from "./agent/loop";
+import { emitTest, slugifyIssueTitle } from "./emit-test";
 
 const USAGE = "Usage: bugsnare repro <issue-file> --target <url> [--max-steps <n>]";
 
@@ -86,6 +87,13 @@ async function main(): Promise<void> {
       : result.assertion.role;
     console.log(`Assertion: ${target} expected "${result.assertion.expected}", actual "${result.assertion.actual}"`);
   }
+
+  if (result.status === "reproduced" && result.assertion) {
+    const outPath = join("bugsnare-output", `${slugifyIssueTitle(result.issueTitle)}.spec.ts`);
+    await emitTest(result, outPath);
+    console.log(`Wrote ${outPath}`);
+  }
+
   console.log(JSON.stringify(result, null, 2));
 
   process.exitCode = result.status === "reproduced" ? 0 : 1;
