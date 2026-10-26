@@ -11,10 +11,28 @@ function singleLine(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
 
-function renderAction(action: AgentAction): string | undefined {
+/**
+ * Keeps a navigation on the target origin as a path so the generated spec uses
+ * Playwright's `baseURL` instead of hard-coding a host.
+ */
+function navigationTarget(url: string, targetOrigin: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(url, targetOrigin);
+  } catch {
+    return url;
+  }
+
+  if (parsed.origin !== targetOrigin) return url;
+
+  const path = `${parsed.pathname}${parsed.search}${parsed.hash}`;
+  return path.length > 0 ? path : "/";
+}
+
+function renderAction(action: AgentAction, targetOrigin: string): string | undefined {
   switch (action.action) {
     case "goto":
-      return `await page.goto(${quote(action.url)});`;
+      return `await page.goto(${quote(navigationTarget(action.url, targetOrigin))});`;
     case "click":
       return `await page.getByRole(${quote(action.role)}, { name: ${quote(action.name)} }).click();`;
     case "fill":
@@ -51,10 +69,18 @@ export function renderSpec(result: AgentResult): string {
   }
 
   const title = singleLine(result.issueTitle);
+  const target = new URL(result.targetUrl);
+  const targetOrigin = target.origin;
   const steps = result.trace
     .filter((entry) => entry.ok)
-    .map((entry) => renderAction(entry.action))
+    .map((entry) => renderAction(entry.action, targetOrigin))
     .filter((line): line is string => line !== undefined);
+
+  // The spec must start on the target page, even when the trace began there
+  // already and never needed an explicit navigation.
+  if (!steps.some((line) => line.startsWith("await page.goto("))) {
+    steps.unshift(`await page.goto(${quote(target.pathname || "/")});`);
+  }
 
   const body = [
     ...steps,

@@ -7,7 +7,7 @@
 import { expect, test } from "@playwright/test";
 
 test("Cart total is wrong when quantity is more than 1", async ({ page }) => {
-  await page.goto("http://localhost:3000");
+  await page.goto("/");
   await page.getByRole("button", { name: "Add Widget" }).click();
   await page.getByRole("spinbutton", { name: "Quantity for Widget" }).fill("3");
   await expect(page.getByRole("status")).toHaveText("$30");

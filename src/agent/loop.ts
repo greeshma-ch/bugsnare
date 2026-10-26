@@ -21,6 +21,8 @@ export interface AgentResult {
   status: AgentStatus;
   /** First heading (or line) of the bug report, used for emitted test headers. */
   issueTitle: string;
+  /** The URL the agent was pointed at, used to emit origin-relative navigations. */
+  targetUrl: string;
   trace: TraceEntry[];
   assertion?: Assertion;
 }
@@ -217,7 +219,7 @@ export async function runAgent({
 
       if (!parsed.ok) {
         console.log(`[step ${step}/${maxSteps}] gave up: no valid action after retry (${parsed.error})`);
-        return { status: "gave_up", issueTitle, trace };
+        return { status: "gave_up", issueTitle, targetUrl, trace };
       }
 
       const action = parsed.action;
@@ -226,7 +228,7 @@ export async function runAgent({
 
       if (action.action === "give_up") {
         console.log(`[step ${step}/${maxSteps}] result: gave up - ${action.reason}`);
-        return { status: "gave_up", issueTitle, trace };
+        return { status: "gave_up", issueTitle, targetUrl, trace };
       }
 
       if (action.action === "assert_fail") {
@@ -240,7 +242,7 @@ export async function runAgent({
         console.log(
           `[step ${step}/${maxSteps}] result: reproduced - expected "${assertion.expected}", actual "${assertion.actual}"`,
         );
-        return { status: "reproduced", issueTitle, trace, assertion };
+        return { status: "reproduced", issueTitle, targetUrl, trace, assertion };
       }
 
       const outcome = await session.execute(action);
@@ -251,7 +253,7 @@ export async function runAgent({
     }
 
     console.log(`Reached the ${maxSteps}-step limit without reproducing the bug.`);
-    return { status: "max_steps", issueTitle, trace };
+    return { status: "max_steps", issueTitle, targetUrl, trace };
   } finally {
     await session.close();
   }

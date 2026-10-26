@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "bugsnare": "tsx src/cli.ts",
+    "eval": "tsx scripts/eval.ts",
     "test": "playwright test",
     "test:report": "playwright show-report"
   },

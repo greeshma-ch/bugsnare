@@ -42,6 +42,8 @@ export class BrowserSession {
     this.page = await this.context.newPage();
     this.page.setDefaultTimeout(ACTION_TIMEOUT_MS);
     this.page.setDefaultNavigationTimeout(ACTION_TIMEOUT_MS);
+    // Open on the target so the first snapshot describes the app, not about:blank.
+    await this.page.goto(baseUrl, { timeout: ACTION_TIMEOUT_MS });
   }
 
   async close(): Promise<void> {

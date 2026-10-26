@@ -73,9 +73,24 @@
     <ul class="cart" id="cart"></ul>
 
     <p>
+      Subtotal:
+      <span id="subtotal">$0</span>
+    </p>
+
+    <p>
       Total:
       <span id="total" role="status">$0</span>
     </p>
+
+    <section class="discount">
+      <h2>Discount</h2>
+      <label for="discount-code">Discount code</label>
+      <input id="discount-code" type="text" autocomplete="off" />
+      <button type="button" id="apply-discount">Apply discount</button>
+      <p id="discount-message"></p>
+    </section>
+
+    <p><a id="checkout-link" href="checkout.html">Checkout</a></p>
 
     <script>
       const PRODUCTS = {
@@ -83,24 +98,69 @@
         gadget: { name: "Gadget", price: 25 },
       };
 
+      const DISCOUNT_CODES = {
+        SAVE10: { code: "SAVE10", percent: 10 },
+      };
+
       /** @type {{ id: string, name: string, price: number, quantity: number }[]} */
       const cart = [];
       let nextLineId = 1;
+      let appliedDiscount = null;
 
       const cartEl = document.getElementById("cart");
       const emptyEl = document.getElementById("cart-empty");
       const totalEl = document.getElementById("total");
+      const subtotalEl = document.getElementById("subtotal");
+      const discountInput = document.getElementById("discount-code");
+      const discountButton = document.getElementById("apply-discount");
+      const discountMessage = document.getElementById("discount-message");
 
       function formatPrice(amount) {
-        return "$" + amount;
+        // Money is rendered without trailing zeros ("$10", "$31.5"), so a figure
+        // derived by plain arithmetic matches what the page displays.
+        return "$" + String(Number(amount.toFixed(2)));
+      }
+
+      function discountAmount(subtotal) {
+        if (!appliedDiscount) return 0;
+
+        // BUG (seeded, intentional): SAVE10 should take 10% off the subtotal
+        // (a $35 cart becomes $31.50), but this subtracts a flat $10 instead
+        // (a $35 cart becomes $25).
+        return 10;
       }
 
       function updateTotal() {
-        // BUG (seeded, intentional): the total sums each line's unit price and
-        // ignores `item.quantity`, so a cart with 3 x $10 Widget shows $10
+        // BUG (seeded, intentional): the subtotal sums each line's unit price
+        // and ignores `item.quantity`, so a cart with 3 x $10 Widget shows $10
         // instead of $30.
-        const total = cart.reduce((sum, item) => sum + item.price, 0);
+        const subtotal = cart.reduce((sum, item) => sum + item.price, 0);
+        const total = subtotal - discountAmount(subtotal);
+
+        subtotalEl.textContent = formatPrice(subtotal);
         totalEl.textContent = formatPrice(total);
+      }
+
+      function applyDiscount() {
+        const code = discountInput.value.trim().toUpperCase();
+
+        if (!code) {
+          appliedDiscount = null;
+          discountMessage.textContent = "Enter a discount code.";
+          updateTotal();
+          return;
+        }
+
+        if (!DISCOUNT_CODES[code]) {
+          appliedDiscount = null;
+          discountMessage.textContent = "That discount code is not valid.";
+          updateTotal();
+          return;
+        }
+
+        appliedDiscount = DISCOUNT_CODES[code];
+        discountMessage.textContent = "Discount " + appliedDiscount.code + " applied.";
+        updateTotal();
       }
 
       function createCartItem(item) {
@@ -149,6 +209,15 @@
 
       document.querySelectorAll("button[data-add]").forEach((button) => {
         button.addEventListener("click", () => addToCart(button.dataset.add));
+      });
+
+      discountButton.addEventListener("click", applyDiscount);
+
+      // A known code applies as soon as it is typed, so the discount works
+      // whether the shopper types it or presses "Apply discount".
+      discountInput.addEventListener("input", () => {
+        const code = discountInput.value.trim().toUpperCase();
+        if (DISCOUNT_CODES[code]) applyDiscount();
       });
 
       updateTotal();
