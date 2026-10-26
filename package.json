@@ -1,0 +1,25 @@
+{
+  "name": "bugsnare",
+  "version": "0.1.0",
+  "description": "CLI that reproduces bugs in web apps using an LLM agent and Playwright",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "playwright test",
+    "test:report": "playwright show-report"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@playwright/test": "^1.64.1",
+    "@types/node": "^26.6.5",
+    "http-server": "^14.1.1",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "groq-sdk": "^1.6.0",
+    "zod": "^4.6.7"
+  }
+}

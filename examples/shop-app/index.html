@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Shop App</title>
+    <style>
+      body {
+        font-family: system-ui, -apple-system, Segoe UI, sans-serif;
+        margin: 0 auto;
+        max-width: 40rem;
+        padding: 2rem 1rem;
+        color: #111;
+      }
+      h1 {
+        font-size: 1.5rem;
+      }
+      ul.products {
+        list-style: none;
+        display: flex;
+        gap: 2rem;
+        padding: 0;
+      }
+      li.product {
+        border: 1px solid #ddd;
+        border-radius: 8px;
+        padding: 1rem;
+      }
+      button {
+        font: inherit;
+        padding: 0.4rem 0.75rem;
+        cursor: pointer;
+      }
+      ul.cart {
+        list-style: none;
+        padding: 0;
+      }
+      li.cart-item {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        padding: 0.5rem 0;
+        border-bottom: 1px solid #eee;
+      }
+      input[type="number"] {
+        width: 4rem;
+        font: inherit;
+        padding: 0.2rem 0.4rem;
+      }
+      #total {
+        font-weight: 600;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Shop</h1>
+
+    <ul class="products">
+      <li class="product">
+        <h2>Widget</h2>
+        <p>Price: $10</p>
+        <button type="button" data-add="widget">Add Widget</button>
+      </li>
+      <li class="product">
+        <h2>Gadget</h2>
+        <p>Price: $25</p>
+        <button type="button" data-add="gadget">Add Gadget</button>
+      </li>
+    </ul>
+
+    <h2>Cart</h2>
+    <p id="cart-empty">Your cart is empty.</p>
+    <ul class="cart" id="cart"></ul>
+
+    <p>
+      Total:
+      <span id="total" role="status">$0</span>
+    </p>
+
+    <script>
+      const PRODUCTS = {
+        widget: { name: "Widget", price: 10 },
+        gadget: { name: "Gadget", price: 25 },
+      };
+
+      /** @type {{ id: string, name: string, price: number, quantity: number }[]} */
+      const cart = [];
+      let nextLineId = 1;
+
+      const cartEl = document.getElementById("cart");
+      const emptyEl = document.getElementById("cart-empty");
+      const totalEl = document.getElementById("total");
+
+      function formatPrice(amount) {
+        return "$" + amount;
+      }
+
+      function updateTotal() {
+        // BUG (seeded, intentional): the total sums each line's unit price and
+        // ignores `item.quantity`, so a cart with 3 x $10 Widget shows $10
+        // instead of $30.
+        const total = cart.reduce((sum, item) => sum + item.price, 0);
+        totalEl.textContent = formatPrice(total);
+      }
+
+      function createCartItem(item) {
+        const li = document.createElement("li");
+        li.className = "cart-item";
+        li.dataset.lineId = item.id;
+
+        const label = document.createElement("span");
+        label.textContent = item.name;
+
+        const quantity = document.createElement("input");
+        quantity.type = "number";
+        quantity.min = "1";
+        quantity.step = "1";
+        quantity.value = String(item.quantity);
+        quantity.setAttribute("aria-label", "Quantity for " + item.name);
+        quantity.addEventListener("input", () => {
+          const parsed = Number.parseInt(quantity.value, 10);
+          item.quantity = Number.isNaN(parsed) ? 1 : Math.max(1, parsed);
+          updateTotal();
+        });
+
+        const linePrice = document.createElement("span");
+        linePrice.textContent = formatPrice(item.price);
+
+        li.append(label, quantity, linePrice);
+        return li;
+      }
+
+      function addToCart(productKey) {
+        const product = PRODUCTS[productKey];
+        if (!product) return;
+
+        const item = {
+          id: String(nextLineId++),
+          name: product.name,
+          price: product.price,
+          quantity: 1,
+        };
+        cart.push(item);
+
+        emptyEl.hidden = true;
+        cartEl.append(createCartItem(item));
+        updateTotal();
+      }
+
+      document.querySelectorAll("button[data-add]").forEach((button) => {
+        button.addEventListener("click", () => addToCart(button.dataset.add));
+      });
+
+      updateTotal();
+    </script>
+  </body>
+</html>
