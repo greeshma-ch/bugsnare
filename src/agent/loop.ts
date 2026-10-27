@@ -8,6 +8,7 @@ import { CRITIC_PROMPT, SYSTEM_PROMPT } from "./prompt";
 const RECENT_ACTION_LIMIT = 5;
 const SNAPSHOT_CHAR_LIMIT = 4_000;
 const MAX_COMPLETION_TOKENS = 1500;
+const CRITIC_MAX_COMPLETION_TOKENS = 400;
 const MAX_RATE_LIMIT_ATTEMPTS = 5;
 const BASE_BACKOFF_MS = 1_000;
 
@@ -296,12 +297,13 @@ export async function runAgent({
   // Reasoning models spend completion tokens on hidden reasoning before writing
   // the JSON, so the budget is 800 and effort is medium. Not every model accepts
   // the parameter, so a rejection switches it off for the rest of the run.
-  let reasoningMode: "medium" | "off" = "medium";
+  const reasoningOff = new Set<string>();
 
   const callModel = async (
     modelName: string,
     systemPrompt: string,
     userText: string,
+    maxTokens: number = MAX_COMPLETION_TOKENS,
   ): Promise<string> => {
     const params = {
       model: modelName,
@@ -315,22 +317,22 @@ export async function runAgent({
     };
 
     let completion;
-    if (reasoningMode === "off") {
+    if (reasoningOff.has(modelName)) {
+  completion = await withRateLimitRetry(() => groq.chat.completions.create(params));
+  }  else {
+  try {
+    completion = await withRateLimitRetry(() =>
+      groq.chat.completions.create({ ...params, reasoning_effort: "medium" }),
+    );
+  } catch (error) {
+    if (rejectsReasoningEffort(error)) {
+      reasoningOff.add(modelName);
       completion = await withRateLimitRetry(() => groq.chat.completions.create(params));
     } else {
-      try {
-        completion = await withRateLimitRetry(() =>
-          groq.chat.completions.create({ ...params, reasoning_effort: "medium" }),
-        );
-      } catch (error) {
-        if (rejectsReasoningEffort(error)) {
-          reasoningMode = "off";
-          completion = await withRateLimitRetry(() => groq.chat.completions.create(params));
-        } else {
-          throw error;
-        }
-      }
+      throw error;
     }
+  }
+}
 
     usage.calls += 1;
     usage.promptTokens += completion.usage?.prompt_tokens ?? 0;
@@ -360,7 +362,7 @@ export async function runAgent({
 
       let reply: string;
       try {
-        reply = await callModel(models.critic, CRITIC_PROMPT, userText);
+        reply = await callModel(models.critic, CRITIC_PROMPT, userText, CRITIC_MAX_COMPLETION_TOKENS);
       } catch (error) {
         return { kind: "unavailable", reason: errorMessage(error) };
       }
