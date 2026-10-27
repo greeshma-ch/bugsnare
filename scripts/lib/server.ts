@@ -3,6 +3,15 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 export const BASE_URL = "http://localhost:3000";
 export const SERVER_COMMAND = "npx http-server examples/shop-app -p 3000 -s";
 
+export const BUGGY_URL = BASE_URL;
+export const FIXED_URL = "http://localhost:3001";
+
+export interface ServerOptions {
+  url?: string;
+  command?: string;
+  label?: string;
+}
+
 export async function serverIsUp(url = BASE_URL): Promise<boolean> {
   try {
     const response = await fetch(url);
@@ -22,18 +31,22 @@ export async function waitForServer(timeoutMs = 15_000, url = BASE_URL): Promise
 }
 
 /** Reuses an already-running server, otherwise starts one and returns it. */
-export async function ensureServer(url = BASE_URL): Promise<ChildProcess | undefined> {
+export async function ensureServer(options: ServerOptions = {}): Promise<ChildProcess | undefined> {
+  const url = options.url ?? BASE_URL;
+  const command = options.command ?? SERVER_COMMAND;
+  const label = options.label ?? url;
+
   if (await serverIsUp(url)) {
-    console.log(`Reusing the server already listening on ${url}`);
+    console.log(`Reusing the ${label} server already listening on ${url}`);
     return undefined;
   }
 
-  const server = spawn(SERVER_COMMAND, { shell: true, stdio: "ignore" });
+  const server = spawn(command, { shell: true, stdio: "ignore" });
   if (!(await waitForServer(15_000, url))) {
     stopServer(server);
-    throw new Error(`Shop app did not start at ${url} within 15s`);
+    throw new Error(`${label} app did not start at ${url} within 15s`);
   }
-  console.log(`Started the shop app at ${url}`);
+  console.log(`Started the ${label} app at ${url}`);
   return server;
 }
 

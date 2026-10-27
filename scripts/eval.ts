@@ -17,6 +17,8 @@ interface RunOutcome {
   status: AgentStatus | "error";
   steps: number;
   seconds: number;
+  tokens: number;
+  calls: number;
   error?: string;
 }
 
@@ -88,8 +90,8 @@ async function runQuiet<T>(operation: () => Promise<T>): Promise<{ value: T; log
 
 function renderTable(outcomes: IssueOutcome[]): string {
   const header = [
-    "| issue | expected | actual | steps | seconds | pass/fail |",
-    "| --- | --- | --- | --- | --- | --- |",
+    "| issue | expected | actual | steps | seconds | tokens | pass/fail |",
+    "| --- | --- | --- | --- | --- | --- | --- |",
   ];
 
   const rows = outcomes.map((outcome) => {
@@ -101,10 +103,23 @@ function renderTable(outcomes: IssueOutcome[]): string {
     const seconds = outcome.runs
       .reduce((total, run) => total + run.seconds, 0)
       .toFixed(1);
+
+    // Average over the runs that actually reached the model; error runs report
+    // no usage and would drag the mean down.
+    const billedRuns = outcome.runs.filter((run) => run.calls > 0);
+    const tokens =
+      billedRuns.length === 0
+        ? "-"
+        : String(
+            Math.round(
+              billedRuns.reduce((total, run) => total + run.tokens, 0) / billedRuns.length,
+            ),
+          );
+
     const hits = outcome.runs.filter((run) => run.status === outcome.expected).length;
     const verdict = `${hits}/${outcome.runs.length} ${hits === outcome.runs.length ? "PASS" : "FAIL"}`;
 
-    return `| ${outcome.issue} | ${outcome.expected} | ${actual} | ${steps} | ${seconds}s | ${verdict} |`;
+    return `| ${outcome.issue} | ${outcome.expected} | ${actual} | ${steps} | ${seconds}s | ${tokens} | ${verdict} |`;
   });
 
   return [...header, ...rows].join("\n");
@@ -176,20 +191,29 @@ async function main(): Promise<void> {
             status: value.status,
             steps: value.trace.length,
             seconds: (Date.now() - started) / 1000,
+            tokens: value.usage.totalTokens,
+            calls: value.usage.calls,
           };
           logs.push(...runLogs);
           if (args.verbose) console.log(runLogs.join("\n"));
         } catch (error) {
           // A flaky model call is a failed run, not a reason to abandon the eval.
           const message = error instanceof Error ? error.message.split("\n")[0]! : String(error);
-          outcome = { status: "error", steps: 0, seconds: (Date.now() - started) / 1000, error: message };
+          outcome = {
+            status: "error",
+            steps: 0,
+            seconds: (Date.now() - started) / 1000,
+            tokens: 0,
+            calls: 0,
+            error: message,
+          };
           logs.push(`error: ${message}`);
         }
 
         runs.push(outcome);
 
         console.log(
-          `  ${issue} run ${run}/${args.runs}: ${outcome.status} (${outcome.steps} steps, ${outcome.seconds.toFixed(1)}s)${outcome.error ? ` - ${outcome.error}` : ""}`,
+          `  ${issue} run ${run}/${args.runs}: ${outcome.status} (${outcome.steps} steps, ${outcome.seconds.toFixed(1)}s, ${outcome.tokens} tokens)${outcome.error ? ` - ${outcome.error}` : ""}`,
         );
 
         if (run < args.runs) await sleep(args.delayMs);

@@ -5,6 +5,8 @@ import { agentActionSchema, type AgentAction, type Assertion } from "../actions"
 import { SYSTEM_PROMPT } from "./prompt";
 
 const RECENT_ACTION_LIMIT = 5;
+const SNAPSHOT_CHAR_LIMIT = 4_000;
+const MAX_COMPLETION_TOKENS = 300;
 const MAX_RATE_LIMIT_ATTEMPTS = 5;
 const BASE_BACKOFF_MS = 1_000;
 
@@ -17,6 +19,20 @@ export interface TraceEntry {
   result: string;
 }
 
+export interface TokenUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  calls: number;
+}
+
+export interface AgentModels {
+  /** Model that picks the next action. */
+  agent: string;
+  /** Model reserved for the critic step; defaults to the agent model. */
+  critic: string;
+}
+
 export interface AgentResult {
   status: AgentStatus;
   /** First heading (or line) of the bug report, used for emitted test headers. */
@@ -24,6 +40,8 @@ export interface AgentResult {
   /** The URL the agent was pointed at, used to emit origin-relative navigations. */
   targetUrl: string;
   trace: TraceEntry[];
+  /** Tokens spent on model calls during this run. */
+  usage: TokenUsage;
   assertion?: Assertion;
 }
 
@@ -111,19 +129,52 @@ function describeAction(action: AgentAction): string {
   }
 }
 
+function oneLine(text: string, limit = 160): string {
+  const single = text.replace(/\s+/g, " ").trim();
+  return single.length > limit ? `${single.slice(0, limit - 3)}...` : single;
+}
+
+/** Lines that carry something the model can act on. */
+const INTERACTIVE_LINE =
+  /^\s*-\s*(button|link|textbox|searchbox|spinbutton|checkbox|radio|switch|combobox|option|slider|tab|menuitem|alert|status|heading|dialog|listitem|cell|gridcell)\b/;
+
+/**
+ * Keeps a huge accessibility tree inside the budget by dropping structural
+ * lines first, so every button, link, input and alert survives.
+ */
+export function truncateSnapshot(snapshot: string): string {
+  if (snapshot.length <= SNAPSHOT_CHAR_LIMIT) return snapshot;
+
+  const [urlLine = "", ...rest] = snapshot.split("\n");
+  const kept = rest.filter((line) => INTERACTIVE_LINE.test(line));
+  const budget = SNAPSHOT_CHAR_LIMIT - urlLine.length - 40;
+
+  let body = kept.join("\n");
+  if (body.length > budget) {
+    body = body.slice(0, Math.max(0, budget));
+    const lastNewline = body.lastIndexOf("\n");
+    if (lastNewline > 0) body = body.slice(0, lastNewline);
+  }
+
+  const omitted = rest.length - body.split("\n").length;
+  const marker = omitted > 0 ? `\n... ${omitted} line(s) omitted` : "";
+  return `${urlLine}\n${body}${marker}`;
+}
+
 function buildUserMessage(
   issueText: string,
   targetUrl: string,
   recent: TraceEntry[],
   snapshot: string,
 ): string {
+  // History is action + outcome only: no accumulated snapshots, no old reasons.
   const history =
     recent.length === 0
       ? "(no actions taken yet)"
       : recent
           .map(
             (entry) =>
-              `step ${entry.step}: ${JSON.stringify(entry.action)} -> ${entry.ok ? "ok" : "failed"}: ${entry.result}`,
+              `${entry.step}: ${describeAction(entry.action)} -> ${entry.ok ? "ok" : "failed"}: ${oneLine(entry.result)}`,
           )
           .join("\n");
 
@@ -137,7 +188,7 @@ function buildUserMessage(
     history,
     "",
     "Current page state (URL + accessibility snapshot):",
-    snapshot,
+    truncateSnapshot(snapshot),
     "",
     "Reply with exactly one JSON object, no other text.",
   ].join("\n");
@@ -159,6 +210,23 @@ function toAssertion(action: Extract<AgentAction, { action: "assert_fail" }>): A
   };
 }
 
+/** Model per role: the agent picks actions, the critic (future) judges them. */
+export function resolveModels(): AgentModels {
+  const agent = process.env.GROQ_MODEL;
+  if (!agent) {
+    throw new Error("GROQ_MODEL is not set. Add the Groq model ID to .env in the project root.");
+  }
+  const critic = process.env.GROQ_CRITIC_MODEL ?? agent;
+  return { agent, critic };
+}
+
+/** True when the API rejected the request only because of reasoning_effort. */
+function rejectsReasoningEffort(error: unknown): boolean {
+  const status = typeof error === "object" && error !== null ? (error as { status?: unknown }).status : undefined;
+  if (status !== 400) return false;
+  return /reasoning_effort/i.test(errorMessage(error));
+}
+
 export async function runAgent({
   issueText,
   targetUrl,
@@ -169,31 +237,63 @@ export async function runAgent({
     throw new Error("GROQ_API_KEY is not set. Add it to .env in the project root.");
   }
 
-  const model = process.env.GROQ_MODEL;
-  if (!model) {
-    throw new Error("GROQ_MODEL is not set. Add the Groq model ID to .env in the project root.");
-  }
+  const models = resolveModels();
+  const model = models.agent;
 
   // The loop owns retry policy; the SDK's built-in retries would stack on top.
-  const groq = new Groq({ apiKey, maxRetries: 0 });
+  // A request timeout keeps a stalled call from hanging the whole run.
+  const groq = new Groq({ apiKey, maxRetries: 0, timeout: 60_000 });
   const session = new BrowserSession();
   const trace: TraceEntry[] = [];
   const issueTitle = issueTitleFrom(issueText);
+  const usage: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0, calls: 0 };
+
+  // Reasoning models spend completion tokens on hidden reasoning; with a small
+  // max_tokens cap they can run out before writing the JSON. Low effort keeps
+  // the reply inside the budget. Not every model accepts the parameter, so the
+  // first rejection switches it off for the rest of the run.
+  let reasoningMode: "unknown" | "low" | "off" = "unknown";
 
   const ask = async (userText: string): Promise<string> => {
-    const completion = await withRateLimitRetry(() =>
-      groq.chat.completions.create({
-        model,
-        temperature: 0,
-        response_format: { type: "json_object" },
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: userText },
-        ],
-      }),
-    );
+    const params = {
+      model,
+      temperature: 0,
+      max_tokens: MAX_COMPLETION_TOKENS,
+      response_format: { type: "json_object" as const },
+      messages: [
+        { role: "system" as const, content: SYSTEM_PROMPT },
+        { role: "user" as const, content: userText },
+      ],
+    };
+
+    let completion;
+    if (reasoningMode === "off") {
+      completion = await withRateLimitRetry(() => groq.chat.completions.create(params));
+    } else {
+      try {
+        completion = await withRateLimitRetry(() =>
+          groq.chat.completions.create({ ...params, reasoning_effort: "low" }),
+        );
+        reasoningMode = "low";
+      } catch (error) {
+        if (reasoningMode === "unknown" && rejectsReasoningEffort(error)) {
+          reasoningMode = "off";
+          completion = await withRateLimitRetry(() => groq.chat.completions.create(params));
+        } else {
+          throw error;
+        }
+      }
+    }
+
+    usage.calls += 1;
+    usage.promptTokens += completion.usage?.prompt_tokens ?? 0;
+    usage.completionTokens += completion.usage?.completion_tokens ?? 0;
+    usage.totalTokens += completion.usage?.total_tokens ?? 0;
+
     return completion.choices[0]?.message?.content ?? "";
   };
+
+  const base = { issueTitle, targetUrl, usage };
 
   try {
     await session.start(targetUrl, true);
@@ -219,7 +319,7 @@ export async function runAgent({
 
       if (!parsed.ok) {
         console.log(`[step ${step}/${maxSteps}] gave up: no valid action after retry (${parsed.error})`);
-        return { status: "gave_up", issueTitle, targetUrl, trace };
+        return { ...base, status: "gave_up", trace };
       }
 
       const action = parsed.action;
@@ -228,7 +328,7 @@ export async function runAgent({
 
       if (action.action === "give_up") {
         console.log(`[step ${step}/${maxSteps}] result: gave up - ${action.reason}`);
-        return { status: "gave_up", issueTitle, targetUrl, trace };
+        return { ...base, status: "gave_up", trace };
       }
 
       if (action.action === "assert_fail") {
@@ -242,7 +342,7 @@ export async function runAgent({
         console.log(
           `[step ${step}/${maxSteps}] result: reproduced - expected "${assertion.expected}", actual "${assertion.actual}"`,
         );
-        return { status: "reproduced", issueTitle, targetUrl, trace, assertion };
+        return { ...base, status: "reproduced", trace, assertion };
       }
 
       const outcome = await session.execute(action);
@@ -253,7 +353,7 @@ export async function runAgent({
     }
 
     console.log(`Reached the ${maxSteps}-step limit without reproducing the bug.`);
-    return { status: "max_steps", issueTitle, targetUrl, trace };
+    return { ...base, status: "max_steps", trace };
   } finally {
     await session.close();
   }

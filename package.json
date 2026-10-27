@@ -7,6 +7,9 @@
   "scripts": {
     "bugsnare": "tsx src/cli.ts",
     "eval": "tsx scripts/eval.ts",
+    "demo": "tsx scripts/demo.ts",
+    "serve:buggy": "http-server examples/shop-app -p 3000 -s",
+    "serve:fixed": "http-server examples/shop-app-fixed -p 3001 -s",
     "test": "playwright test",
     "test:report": "playwright show-report"
   },

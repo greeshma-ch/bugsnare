@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Checkout</title>
+    <style>
+      body {
+        font-family: system-ui, -apple-system, Segoe UI, sans-serif;
+        margin: 0 auto;
+        max-width: 40rem;
+        padding: 2rem 1rem;
+        color: #111;
+      }
+      form {
+        display: grid;
+        gap: 0.75rem;
+        max-width: 22rem;
+      }
+      label {
+        font-weight: 600;
+      }
+      input {
+        font: inherit;
+        padding: 0.4rem 0.5rem;
+      }
+      button {
+        font: inherit;
+        padding: 0.5rem 0.9rem;
+        justify-self: start;
+        cursor: pointer;
+      }
+      #email-error {
+        color: #a4262c;
+        font-weight: 600;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Checkout</h1>
+
+    <form id="checkout-form" novalidate>
+      <label for="name">Name</label>
+      <input id="name" name="name" type="text" autocomplete="name" />
+
+      <label for="email">Email</label>
+      <input id="email" name="email" type="text" autocomplete="email" />
+
+      <button type="submit" id="place-order">Place order</button>
+    </form>
+
+    <p id="email-error" role="alert" hidden></p>
+
+    <script>
+      const form = document.getElementById("checkout-form");
+      const nameInput = document.getElementById("name");
+      const emailInput = document.getElementById("email");
+      const emailError = document.getElementById("email-error");
+
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+
+        const name = nameInput.value.trim();
+        const email = emailInput.value.trim();
+        const emailIsValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+
+        if (!emailIsValid) {
+          // FIXED: the seeded bug accepted an empty or malformed address
+          // silently and placed the order; it now stops and shows the alert.
+          emailError.textContent = "Enter a valid email";
+          emailError.hidden = false;
+          return;
+        }
+
+        // FIXED: the seeded bug sent a placed order back to the cart page
+        // instead of the confirmation page.
+        window.location.href = "confirmation.html";
+      });
+    </script>
+  </body>
+</html>
