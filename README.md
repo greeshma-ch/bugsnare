@@ -72,7 +72,7 @@ If the agent cannot produce a spec in that run, the demo reuses the newest spec 
 
 Every run reports what it spent: `repro` prints `tokens: N` and the result JSON carries the prompt/completion/total split, and `npm run eval` adds an average-tokens column per issue.
 
-To keep each step small, only the current page state is sent as a full snapshot (capped at ~4000 characters with non-interactive lines dropped first), history is reduced to action + outcome, and completions are capped at 300 tokens. Reasoning models spend that budget on hidden reasoning, so requests ask for low reasoning effort and fall back automatically if a model rejects the parameter.
+To keep each step small, only the current page state is sent as a full snapshot (capped at ~4000 characters with non-interactive lines dropped first) and history is reduced to action + outcome. Completions are capped at 800 tokens: reasoning models spend that budget on hidden reasoning before writing the JSON, so a 300-token cap made the agent skip steps. Requests ask for medium effort and fall back automatically if a model rejects the parameter.
 
 ## How it works
 

@@ -1,12 +1,13 @@
 import "dotenv/config";
 import Groq from "groq-sdk";
+import { z } from "zod";
 import { BrowserSession } from "../browser";
 import { agentActionSchema, type AgentAction, type Assertion } from "../actions";
-import { SYSTEM_PROMPT } from "./prompt";
+import { CRITIC_PROMPT, SYSTEM_PROMPT } from "./prompt";
 
 const RECENT_ACTION_LIMIT = 5;
 const SNAPSHOT_CHAR_LIMIT = 4_000;
-const MAX_COMPLETION_TOKENS = 300;
+const MAX_COMPLETION_TOKENS = 800;
 const MAX_RATE_LIMIT_ATTEMPTS = 5;
 const BASE_BACKOFF_MS = 1_000;
 
@@ -42,6 +43,8 @@ export interface AgentResult {
   trace: TraceEntry[];
   /** Tokens spent on model calls during this run. */
   usage: TokenUsage;
+  /** Why the run ended, e.g. the critic rejected the assertion. */
+  explanation?: string;
   assertion?: Assertion;
 }
 
@@ -194,6 +197,48 @@ function buildUserMessage(
   ].join("\n");
 }
 
+function buildCriticMessage(
+  issueText: string,
+  trace: TraceEntry[],
+  assertion: Assertion,
+  snapshot: string,
+): string {
+  const actions =
+    trace.length === 0
+      ? "(no actions taken)"
+      : trace
+          .map(
+            (entry) =>
+              `${entry.step}: ${describeAction(entry.action)} -> ${entry.ok ? "ok" : "failed"}: ${oneLine(entry.result)}`,
+          )
+          .join("\n");
+
+  return [
+    "Bug report:",
+    issueText.trim(),
+    "",
+    "Action trace:",
+    actions,
+    "",
+    "Proposed assertion:",
+    JSON.stringify(assertion),
+    "",
+    "Final page state (URL + accessibility snapshot):",
+    snapshot,
+    "",
+    'Reply with exactly one JSON object: {"verdict":"bug"|"not_a_bug","reason":"..."}.',
+  ].join("\n");
+}
+
+const criticVerdictSchema = z.object({
+  verdict: z.enum(["bug", "not_a_bug"]),
+  reason: z.string().min(1),
+});
+
+type Critique =
+  | { kind: "verdict"; verdict: "bug" | "not_a_bug"; reason: string }
+  | { kind: "unavailable"; reason: string };
+
 function issueTitleFrom(issueText: string): string {
   const lines = issueText.split(/\r?\n/).map((line) => line.trim());
   const heading = lines.find((line) => /^#+\s+/.test(line));
@@ -248,20 +293,23 @@ export async function runAgent({
   const issueTitle = issueTitleFrom(issueText);
   const usage: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0, calls: 0 };
 
-  // Reasoning models spend completion tokens on hidden reasoning; with a small
-  // max_tokens cap they can run out before writing the JSON. Low effort keeps
-  // the reply inside the budget. Not every model accepts the parameter, so the
-  // first rejection switches it off for the rest of the run.
-  let reasoningMode: "unknown" | "low" | "off" = "unknown";
+  // Reasoning models spend completion tokens on hidden reasoning before writing
+  // the JSON, so the budget is 800 and effort is medium. Not every model accepts
+  // the parameter, so a rejection switches it off for the rest of the run.
+  let reasoningMode: "medium" | "off" = "medium";
 
-  const ask = async (userText: string): Promise<string> => {
+  const callModel = async (
+    modelName: string,
+    systemPrompt: string,
+    userText: string,
+  ): Promise<string> => {
     const params = {
-      model,
+      model: modelName,
       temperature: 0,
       max_tokens: MAX_COMPLETION_TOKENS,
       response_format: { type: "json_object" as const },
       messages: [
-        { role: "system" as const, content: SYSTEM_PROMPT },
+        { role: "system" as const, content: systemPrompt },
         { role: "user" as const, content: userText },
       ],
     };
@@ -272,11 +320,10 @@ export async function runAgent({
     } else {
       try {
         completion = await withRateLimitRetry(() =>
-          groq.chat.completions.create({ ...params, reasoning_effort: "low" }),
+          groq.chat.completions.create({ ...params, reasoning_effort: "medium" }),
         );
-        reasoningMode = "low";
       } catch (error) {
-        if (reasoningMode === "unknown" && rejectsReasoningEffort(error)) {
+        if (rejectsReasoningEffort(error)) {
           reasoningMode = "off";
           completion = await withRateLimitRetry(() => groq.chat.completions.create(params));
         } else {
@@ -291,6 +338,47 @@ export async function runAgent({
     usage.totalTokens += completion.usage?.total_tokens ?? 0;
 
     return completion.choices[0]?.message?.content ?? "";
+  };
+
+  const ask = (userText: string): Promise<string> => callModel(model, SYSTEM_PROMPT, userText);
+
+  // One independent check of the proposed assertion. An unavailable critic must
+  // never turn a possible bug into silence, so failures fall back to the agent's
+  // verdict.
+  const critiqueAssertion = async (
+    snapshot: string,
+    proposed: Assertion,
+  ): Promise<Critique> => {
+    const message = buildCriticMessage(issueText, trace, proposed, truncateSnapshot(snapshot));
+    let correction: string | undefined;
+
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      const userText =
+        correction === undefined
+          ? message
+          : `${message}\n\nYour previous reply was invalid: ${correction}. Reply again with exactly one JSON object and nothing else.`;
+
+      let reply: string;
+      try {
+        reply = await callModel(models.critic, CRITIC_PROMPT, userText);
+      } catch (error) {
+        return { kind: "unavailable", reason: errorMessage(error) };
+      }
+
+      try {
+        const parsed = criticVerdictSchema.safeParse(extractJsonObject(reply));
+        if (parsed.success) {
+          return { kind: "verdict", verdict: parsed.data.verdict, reason: parsed.data.reason };
+        }
+        correction = parsed.error.issues
+          .map((issue) => `${issue.path.join(".") || "reply"}: ${issue.message}`)
+          .join("; ");
+      } catch (error) {
+        correction = errorMessage(error);
+      }
+    }
+
+    return { kind: "unavailable", reason: correction ?? "invalid reply" };
   };
 
   const base = { issueTitle, targetUrl, usage };
@@ -333,6 +421,30 @@ export async function runAgent({
 
       if (action.action === "assert_fail") {
         const assertion = toAssertion(action);
+        const critique = await critiqueAssertion(snapshot, assertion);
+
+        if (critique.kind === "unavailable") {
+          console.log(
+            `[step ${step}/${maxSteps}] critic unavailable (${critique.reason}); keeping the assertion`,
+          );
+        } else if (critique.verdict === "not_a_bug") {
+          console.log(`[step ${step}/${maxSteps}] critic: not_a_bug - ${critique.reason}`);
+          trace.push({
+            step,
+            action,
+            ok: true,
+            result: `critic rejected the assertion: ${critique.reason}`,
+          });
+          return {
+            ...base,
+            status: "gave_up",
+            explanation: critique.reason,
+            trace,
+          };
+        } else {
+          console.log(`[step ${step}/${maxSteps}] critic: bug confirmed`);
+        }
+
         trace.push({
           step,
           action,

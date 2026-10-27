@@ -93,6 +93,7 @@ async function runRepro(args: CliArgs): Promise<void> {
   console.log("");
   console.log(`Status: ${result.status}`);
   console.log(`tokens: ${result.usage.totalTokens}`);
+  if (result.explanation) console.log(`Explanation: ${result.explanation}`);
   if (result.assertion) {
     const target = result.assertion.name
       ? `${result.assertion.role} "${result.assertion.name}"`

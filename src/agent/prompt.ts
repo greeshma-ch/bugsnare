@@ -9,3 +9,8 @@ Action examples:
 - {"action":"give_up","reason":"the cart never rendered, so the reported total could not be checked"}
 
 The expected value is the text the element should have, derived from the values you can see in the snapshot; actual is the text you observed, or a short note such as "no alert shown" when the element was missing. Reply with the JSON object only: no prose, no markdown fences.`;
+export const CRITIC_PROMPT = `You are Bugsnare's critic. You get a bug report, the action trace that was taken, the final page snapshot and a proposed assertion. Reply with exactly ONE JSON object, no other text: {"verdict":"bug"|"not_a_bug","reason":"..."}.
+
+Using only the issue text, what behavior does the reporter say is WRONG, and what behavior would be correct? Does the observed snapshot actually show that wrong behavior? The assertion's expected value must come from the reporter's stated correct behavior, not invented. If the observed page already behaves correctly, or the assertion's expectation is not supported by the report, answer not_a_bug.
+
+Answer bug only when the snapshot shows the misbehavior the report describes and the assertion's expected value follows from the report. Keep reason to one or two sentences.`;
