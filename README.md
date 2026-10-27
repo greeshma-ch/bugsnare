@@ -35,14 +35,23 @@ GROQ_CRITIC_MODEL=...     # optional, defaults to GROQ_MODEL
 | `npm run serve:buggy` | serve the buggy app on `http://localhost:3000` |
 | `npm run serve:fixed` | serve the fixed app on `http://localhost:3001` |
 | `npm run bugsnare -- repro <issue-file> --target <url>` | run the agent and write `bugsnare-output/<slug>.spec.ts` |
-| `npm run bugsnare -- verify <spec-file> --target <url>` | replay a spec against a running app |
+| `npm run bugsnare -- verify <spec-file> --target <url> [--repeat <n>]` | replay a spec n times (default 5) and classify the result |
 | `npm run demo` | the whole loop, end to end |
 | `npm run eval` | run the agent over every issue in `examples/shop-app/issues` |
 | `npm test` | run the example suite and every generated spec |
 
-`verify` exits `0` and prints `FIXED: <test title>` when the spec passes, `1` and prints `STILL FAILING: <test title>` with the expected/received values and the artifact path when it fails, and `2` when the target is unreachable or the arguments are wrong.
+`verify` runs the spec `--repeat` times (default 5) with retries disabled and prints one verdict:
+
+| verdict | meaning | exit |
+| --- | --- | --- |
+| `REPRODUCIBLE (N/N)` | every run failed | 1 |
+| `NOT REPRODUCED / FIXED (0/N failures)` | every run passed | 0 |
+| `FLAKY (k/N failures)` | mixed, with the failure rate and the most common failure | 3 |
+| - | target unreachable, bad arguments, or no tests matched | 2 |
 
 On failure, verify keeps the Playwright trace and video in `bugsnare-output/artifacts/<slug>/` (git-ignored).
+
+After `repro` writes a spec it replays it three times against the same target. If it does not fail every time, the CLI prints `repro is flaky or unstable (k/3)` and prepends a warning comment to the generated spec.
 
 ## Demo
 

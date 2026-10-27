@@ -90,7 +90,12 @@
       <p id="discount-message"></p>
     </section>
 
-    <p><a id="checkout-link" href="checkout.html">Checkout</a></p>
+        <section class="flaky">
+      <h2>Flaky checkout</h2>
+      <button type="button" id="flaky-order">Place flaky order</button>
+      <div id="flaky-result"></div>
+    </section>
+<p><a id="checkout-link" href="checkout.html">Checkout</a></p>
 
     <script>
       const PRODUCTS = {
@@ -221,6 +226,26 @@
       });
 
       updateTotal();
-    </script>
+      const flakyButton = document.getElementById("flaky-order");
+      const flakyResult = document.getElementById("flaky-result");
+
+      // Seeded flaky behaviour: this handler fails on every second click.
+      // Each browser run starts with a fresh page (and empty storage), so the
+      // starting phase comes from the load time; a plain 0-based counter would
+      // always succeed on the first click and never look flaky in a test run.
+      let flakyClicks = Math.floor(Date.now() / 1000) % 2;
+
+      flakyButton.addEventListener("click", () => {
+        flakyClicks += 1;
+        const failed = flakyClicks % 2 === 0;
+
+        const message = document.createElement("p");
+        message.setAttribute("role", failed ? "alert" : "status");
+        message.textContent = failed
+          ? "Could not place the order. Please try again."
+          : "Flaky order placed";
+
+        flakyResult.replaceChildren(message);
+      });    </script>
   </body>
 </html>

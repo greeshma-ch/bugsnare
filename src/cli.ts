@@ -1,15 +1,18 @@
 #!/usr/bin/env node
-import { access, readFile } from "node:fs/promises";
+import { access, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { runAgent } from "./agent/loop";
 import { emitTest, slugifyIssueTitle } from "./emit-test";
-import { isTargetReachable, verifySpec } from "./verify";
+import { isTargetReachable, replaySpec } from "./verify";
 
 const USAGE = [
   "Usage:",
   "  bugsnare repro <issue-file> --target <url> [--max-steps <n>]",
-  "  bugsnare verify <spec-file> --target <url>",
+  "  bugsnare verify <spec-file> --target <url> [--repeat <n>]",
 ].join("\n");
+
+const DEFAULT_REPEAT = 5;
+const REPRO_REPLAYS = 3;
 
 type Command = "repro" | "verify";
 
@@ -18,6 +21,7 @@ interface CliArgs {
   file: string;
   targetUrl: string;
   maxSteps?: number;
+  repeat: number;
 }
 
 function parseArgs(argv: string[]): CliArgs {
@@ -29,6 +33,7 @@ function parseArgs(argv: string[]): CliArgs {
   let file: string | undefined;
   let targetUrl: string | undefined;
   let maxSteps: number | undefined;
+  let repeat = DEFAULT_REPEAT;
 
   for (let index = 0; index < rest.length; index++) {
     const arg = rest[index]!;
@@ -47,6 +52,16 @@ function parseArgs(argv: string[]): CliArgs {
         throw new Error("--max-steps must be a positive integer.");
       }
       maxSteps = parsed;
+    } else if (arg === "--repeat" || arg.startsWith("--repeat=")) {
+      if (command !== "verify") {
+        throw new Error("--repeat is only valid with verify.");
+      }
+      const raw = arg === "--repeat" ? rest[++index] ?? "" : arg.slice("--repeat=".length);
+      const parsed = Number.parseInt(raw, 10);
+      if (Number.isNaN(parsed) || parsed < 1) {
+        throw new Error("--repeat must be a positive integer.");
+      }
+      repeat = parsed;
     } else if (arg.startsWith("-")) {
       throw new Error(`Unknown option "${arg}".`);
     } else if (file === undefined) {
@@ -59,7 +74,7 @@ function parseArgs(argv: string[]): CliArgs {
   if (!file) throw new Error(command === "repro" ? "Missing <issue-file>." : "Missing <spec-file>.");
   if (!targetUrl) throw new Error("Missing --target <url>.");
 
-  return { command, file, targetUrl, maxSteps };
+  return { command, file, targetUrl, maxSteps, repeat };
 }
 
 async function runRepro(args: CliArgs): Promise<void> {
@@ -89,11 +104,34 @@ async function runRepro(args: CliArgs): Promise<void> {
     const outPath = join("bugsnare-output", `${slugifyIssueTitle(result.issueTitle)}.spec.ts`);
     await emitTest(result, outPath);
     console.log(`Wrote ${outPath}`);
+
+    // A repro that only fails sometimes is not a reliable regression test.
+    const replay = await replaySpec({
+      specFile: outPath,
+      targetUrl: args.targetUrl,
+      repeat: REPRO_REPLAYS,
+    });
+
+    if (replay.noTests) {
+      console.log("Could not replay the generated spec.");
+    } else if (replay.failures < REPRO_REPLAYS) {
+      console.log(`repro is flaky or unstable (${replay.failures}/${REPRO_REPLAYS})`);
+      await markFlakyRepro(outPath, replay.failures, REPRO_REPLAYS);
+    } else {
+      console.log(`Replay: failed ${replay.failures}/${REPRO_REPLAYS} (stable repro)`);
+    }
   }
 
   console.log(JSON.stringify(result, null, 2));
 
   process.exitCode = result.status === "reproduced" ? 0 : 1;
+}
+
+/** Prepends a warning so the unstable spec is obvious to whoever reads it. */
+async function markFlakyRepro(outPath: string, failures: number, total: number): Promise<void> {
+  const source = await readFile(outPath, "utf8");
+  const comment = `// FLAKY REPRO: only ${failures} of ${total} replays failed when this spec was generated.\n`;
+  await writeFile(outPath, comment + source, "utf8");
 }
 
 async function runVerify(args: CliArgs): Promise<void> {
@@ -114,22 +152,43 @@ async function runVerify(args: CliArgs): Promise<void> {
 
   console.log(`Spec:   ${args.file}`);
   console.log(`Target: ${args.targetUrl}`);
+  console.log(`Repeat: ${args.repeat}`);
   console.log("");
 
-  const outcome = await verifySpec({ specFile: args.file, targetUrl: args.targetUrl });
+  const outcome = await replaySpec({
+    specFile: args.file,
+    targetUrl: args.targetUrl,
+    repeat: args.repeat,
+  });
 
-  if (outcome.fixed) {
-    console.log(`FIXED: ${outcome.title}`);
+  if (outcome.noTests) {
+    console.error(`No tests ran for ${args.file}. Check the path and the Playwright testDir.`);
+    process.exitCode = 2;
+    return;
+  }
+
+  const { total, failures } = outcome;
+
+  if (failures === total) {
+    console.log(`REPRODUCIBLE (${total}/${total})`);
+    if (outcome.mostCommonMessage) console.log(`  failure: ${outcome.mostCommonMessage}`);
+    console.log(`  artifacts: ${outcome.artifactDir}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  if (failures === 0) {
+    console.log(`NOT REPRODUCED / FIXED (0/${total} failures)`);
     process.exitCode = 0;
     return;
   }
 
-  console.log(`STILL FAILING: ${outcome.title}`);
-  if (outcome.expected !== undefined) console.log(`  expected: ${outcome.expected}`);
-  if (outcome.received !== undefined) console.log(`  received: ${outcome.received}`);
-  if (outcome.expected === undefined && outcome.detail) console.log(`  ${outcome.detail}`);
+  const rate = Math.round((failures / total) * 100);
+  console.log(`FLAKY (${failures}/${total} failures)`);
+  console.log(`  failure rate: ${rate}%`);
+  if (outcome.mostCommonMessage) console.log(`  most common failure: ${outcome.mostCommonMessage}`);
   console.log(`  artifacts: ${outcome.artifactDir}`);
-  process.exitCode = 1;
+  process.exitCode = 3;
 }
 
 async function main(): Promise<void> {
